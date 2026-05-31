@@ -5,11 +5,156 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database as db
 import webhook as wh
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crafted Travels — Inquiries</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; }
+    header { background: #1a1a2e; color: #fff; padding: 18px 32px; display: flex; align-items: center; gap: 16px; }
+    header h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: .02em; }
+    .stats { display: flex; gap: 12px; padding: 20px 32px; flex-wrap: wrap; }
+    .stat { background: #fff; border-radius: 8px; padding: 14px 20px; min-width: 110px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .stat .label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: #888; }
+    .stat .value { font-size: 1.9rem; font-weight: 700; margin-top: 2px; }
+    .stat.ig .value { color: #c13584; }
+    .stat.wa .value { color: #25d366; }
+    .stat.new .value { color: #e57c00; }
+    .toolbar { padding: 0 32px 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .toolbar select, .toolbar input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: .875rem; }
+    .toolbar button { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: .875rem; background: #1a1a2e; color: #fff; }
+    .toolbar button:hover { background: #2d2d50; }
+    table { width: calc(100% - 64px); margin: 0 32px 32px; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    thead { background: #f0f0f0; }
+    th, td { padding: 12px 16px; text-align: left; font-size: .875rem; border-bottom: 1px solid #eee; }
+    th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: #555; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fafafa; }
+    .badge { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .badge-instagram { background: #fce4ec; color: #c13584; }
+    .badge-whatsapp  { background: #e8f5e9; color: #1b7a39; }
+    .badge-new       { background: #fff3e0; color: #e65100; }
+    .badge-read      { background: #e3f2fd; color: #1565c0; }
+    .badge-responded { background: #e8f5e9; color: #1b7a37; }
+    .msg { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .actions select { padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: .8rem; }
+    .pagination { display: flex; align-items: center; gap: 10px; padding: 0 32px 32px; font-size: .875rem; }
+    .pagination button { padding: 6px 14px; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; background: #fff; }
+    .pagination button:disabled { opacity: .4; cursor: default; }
+    .pagination .info { color: #888; }
+    .empty { text-align: center; color: #aaa; padding: 48px; }
+  </style>
+</head>
+<body>
+  <header>
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <h1>Crafted Travels — Inquiries</h1>
+  </header>
+  <div class="stats" id="stats">
+    <div class="stat"><div class="label">Total</div><div class="value" id="s-total">—</div></div>
+    <div class="stat ig"><div class="label">Instagram</div><div class="value" id="s-ig">—</div></div>
+    <div class="stat wa"><div class="label">WhatsApp</div><div class="value" id="s-wa">—</div></div>
+    <div class="stat new"><div class="label">New</div><div class="value" id="s-new">—</div></div>
+    <div class="stat"><div class="label">Read</div><div class="value" id="s-read">—</div></div>
+    <div class="stat"><div class="label">Responded</div><div class="value" id="s-resp">—</div></div>
+  </div>
+  <div class="toolbar">
+    <select id="f-platform" onchange="resetAndLoad()">
+      <option value="">All platforms</option>
+      <option value="instagram">Instagram</option>
+      <option value="whatsapp">WhatsApp</option>
+    </select>
+    <select id="f-status" onchange="resetAndLoad()">
+      <option value="">All statuses</option>
+      <option value="new">New</option>
+      <option value="read">Read</option>
+      <option value="responded">Responded</option>
+    </select>
+    <button onclick="resetAndLoad()">Refresh</button>
+  </div>
+  <table>
+    <thead>
+      <tr><th>#</th><th>Platform</th><th>Sender</th><th>Message</th><th>Received</th><th>Status</th></tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="pagination">
+    <button id="btn-prev" onclick="prevPage()" disabled>Prev</button>
+    <span class="info" id="pg-info"></span>
+    <button id="btn-next" onclick="nextPage()">Next</button>
+  </div>
+  <script>
+    const PAGE = 25;
+    let offset = 0, total = 0;
+    async function loadStats() {
+      const r = await fetch('/api/stats');
+      const s = await r.json();
+      document.getElementById('s-total').textContent = s.total;
+      document.getElementById('s-ig').textContent = s.instagram;
+      document.getElementById('s-wa').textContent = s.whatsapp;
+      document.getElementById('s-new').textContent = s.new;
+      document.getElementById('s-read').textContent = s.read;
+      document.getElementById('s-resp').textContent = s.responded;
+    }
+    async function loadTable() {
+      const platform = document.getElementById('f-platform').value;
+      const status   = document.getElementById('f-status').value;
+      const params = new URLSearchParams({ limit: PAGE, offset });
+      if (platform) params.set('platform', platform);
+      if (status)   params.set('status', status);
+      const r = await fetch('/api/inquiries?' + params);
+      const data = await r.json();
+      total = data.total;
+      const tbody = document.getElementById('tbody');
+      if (!data.items.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No inquiries yet</td></tr>';
+      } else {
+        tbody.innerHTML = data.items.map(row => `
+          <tr>
+            <td>${row.id}</td>
+            <td><span class="badge badge-${row.platform}">${row.platform}</span></td>
+            <td>${row.sender_name || row.sender_id}</td>
+            <td class="msg" title="${esc(row.message)}">${esc(row.message)}</td>
+            <td>${new Date(row.received_at + 'Z').toLocaleString()}</td>
+            <td class="actions">
+              <select onchange="updateStatus(${row.id}, this.value)">
+                <option value="new"       ${row.status==='new'?'selected':''}>New</option>
+                <option value="read"      ${row.status==='read'?'selected':''}>Read</option>
+                <option value="responded" ${row.status==='responded'?'selected':''}>Responded</option>
+              </select>
+            </td>
+          </tr>`).join('');
+      }
+      document.getElementById('pg-info').textContent =
+        total ? `${offset + 1}–${Math.min(offset + PAGE, total)} of ${total}` : '0 results';
+      document.getElementById('btn-prev').disabled = offset === 0;
+      document.getElementById('btn-next').disabled = offset + PAGE >= total;
+    }
+    function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    async function updateStatus(id, status) {
+      await fetch(`/api/inquiries/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      loadStats();
+    }
+    function resetAndLoad() { offset = 0; loadTable(); }
+    function prevPage() { offset = Math.max(0, offset - PAGE); loadTable(); }
+    function nextPage() { offset += PAGE; loadTable(); }
+    loadStats();
+    loadTable();
+  </script>
+</body>
+</html>"""
 
 load_dotenv()
 
@@ -107,8 +252,4 @@ def get_stats():
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    with open(os.path.join(os.path.dirname(__file__), "static", "index.html")) as f:
-        return f.read()
-
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
+    return DASHBOARD_HTML
